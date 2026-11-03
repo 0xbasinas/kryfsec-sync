@@ -80,10 +80,14 @@ export class SyncController {
     await this.pair(key)
   }
 
-  /** Forget the key on this device. Local data stays. The server copy stays for other devices. */
-  async unpair(): Promise<void> {
+  /**
+   * Forget the key on this device. Local data stays. The server copy stays for
+   * other devices, unless `deleteServerCopy` is set.
+   */
+  async unpair(opts: { deleteServerCopy?: boolean } = {}): Promise<void> {
     this.clearTimers()
     await this.queue.catch(() => undefined)
+    if (opts.deleteServerCopy && this.transport) await this.transport.remove()
     this.key = this.keys = this.transport = this.state = null
     await this.opts.storage.saveKey(null)
     await this.opts.storage.saveState(null)
