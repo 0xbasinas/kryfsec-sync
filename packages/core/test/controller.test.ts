@@ -1,35 +1,13 @@
 import { describe, expect, it } from 'vitest'
+import { TestServer } from './server'
 import { SyncController, timeAgo, type SyncStorage } from '../src/controller'
 import type { SyncState } from '../src/engine'
 import { appToSnapshot, dropSamples, KRYFSEC_SCHEMA, snapshotToApp, type KryfsecData } from '../src/kryfsec'
-import type { HttpFn } from '../src/transport'
 
 /** A fake server that speaks the real HTTP API. */
 function fakeServer() {
-  const vaults = new Map<string, { body: Uint8Array; version: number; auth: string }>()
-  let online = true
-  const http: HttpFn = async (req) => {
-    if (!online) throw new (await import('../src/transport')).SyncNetworkError()
-    const id = req.url.split('/').pop()!
-    const auth = req.headers.authorization
-    const v = vaults.get(id)
-    const etag = (n: number) => ({ etag: `"${n}"` })
-    const empty = new Uint8Array()
-    if (v && v.auth !== auth) return { status: 401, headers: {}, body: empty }
-    if (req.method === 'GET') return v ? { status: 200, headers: etag(v.version), body: v.body } : { status: 404, headers: {}, body: empty }
-    if (req.method === 'DELETE') {
-      vaults.delete(id)
-      return { status: 204, headers: {}, body: empty }
-    }
-    const create = req.headers['if-none-match'] === '*'
-    const match = req.headers['if-match'] ? Number(req.headers['if-match'].replace(/"/g, '')) : null
-    if (!v && !create) return { status: 409, headers: {}, body: empty }
-    if (v && (create || match !== v.version)) return { status: 409, headers: etag(v.version), body: empty }
-    const version = (v?.version ?? 0) + 1
-    vaults.set(id, { body: req.body!, version, auth: auth! })
-    return { status: v ? 200 : 201, headers: etag(version), body: empty }
-  }
-  return { http, vaults, setOnline: (x: boolean) => (online = x) }
+  const server = new TestServer()
+  return Object.assign(server, { setOnline: (x: boolean) => (server.online = x) })
 }
 
 function memoryStorage(): SyncStorage & { key: string | null; state: SyncState | null } {
@@ -148,7 +126,7 @@ describe('SyncController with kryfsec data', () => {
     expect(again.keyText()).toBe(a.ctl.keyText())
     await expect(again.join('KS1-nope')).rejects.toThrow(/not valid/)
     await again.unpair({ deleteServerCopy: true })
-    expect(server.vaults.size).toBe(0)
+    expect(server.size).toBe(0)
     expect(again.status.paired).toBe(false)
     expect(a.storage.key).toBeNull()
   })

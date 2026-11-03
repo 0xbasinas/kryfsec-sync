@@ -1,7 +1,8 @@
-import { decryptJson, encryptJson, type VaultKeys } from './crypto'
+import { assembleDoc, buildLayout, canonDoc, isManifest, sameManifest, type Manifest } from './chunks'
+import { AAD, decryptJson, encryptJson, type VaultKeys } from './crypto'
 import { docsEqual, isDoc, merge, newestInDoc, stableStringify, stamp, toSnapshot, collectGarbage, type Doc, type Schema, type Snapshot } from './doc'
 import { Clock, type Hlc } from './hlc'
-import type { Transport } from './transport'
+import { MAX_VAULT_BYTES, SyncHttpError, type Transport } from './transport'
 
 /** What a device remembers between syncs (not secret, but keep it with the app data). */
 export interface SyncState {
@@ -15,6 +16,8 @@ export interface SyncState {
   local?: Doc | null
   /** Server version of `base`. */
   version: number | null
+  /** The server's chunk list for `base`, so unchanged parts are not downloaded again. */
+  manifest?: Manifest | null
   /** Time of the last good sync (ms). */
   lastSync?: number
 }
@@ -44,6 +47,9 @@ export interface SyncResult {
   version: number
   /** Edits came in while syncing; run sync again soon. */
   dirty: boolean
+  /** Pieces downloaded and uploaded in this sync. */
+  fetched: number
+  uploaded: number
 }
 
 const MAX_TRIES = 5
@@ -70,13 +76,27 @@ export async function syncOnce(deps: SyncDeps): Promise<SyncResult> {
   const { schema, keys, transport } = deps
   const state = deps.state
   const clock = new Clock(state.device, state.clock, now)
+  const sent = new Set<string>()
+  let fetched = 0
   for (let attempt = 0; attempt < MAX_TRIES; attempt++) {
     const remote = await transport.get()
     let remoteDoc: Doc | null = null
-    if (remote) {
-      const raw = decryptJson(keys, remote.body)
+    let remoteManifest: Manifest | null = null
+    if (remote?.format === 1) {
+      // Old single-blob vault: read it, and the push below upgrades it.
+      const raw = decryptJson(keys, remote.body, AAD.blob(keys.vaultId))
       if (!isDoc(raw)) throw new Error('Sync data on the server is not valid')
-      remoteDoc = raw
+      remoteDoc = canonDoc(raw)
+    } else if (remote) {
+      const raw = decryptJson(keys, remote.body, AAD.manifest(keys.vaultId))
+      if (!isManifest(raw)) throw new Error('Sync data on the server is not valid')
+      remoteManifest = raw
+      const base = state.base && state.manifest ? { doc: state.base, manifest: state.manifest } : null
+      const got = await assembleDoc(keys, raw, base, (names) => transport.readChunks(names))
+      fetched += got.fetched
+      remoteDoc = got.doc
+    }
+    if (remoteDoc) {
       const newest = newestInDoc(remoteDoc)
       if (newest) clock.observe(newest)
     }
@@ -84,7 +104,7 @@ export async function syncOnce(deps: SyncDeps): Promise<SyncResult> {
     const remoteSnap = joining && remoteDoc ? toSnapshot(remoteDoc, schema) : null
     const readNow = (): Snapshot => (remoteSnap ? joinView(deps.onJoin ? deps.onJoin(deps.read()) : deps.read(), remoteSnap) : deps.read())
 
-    // No awaits from here until the PUT, so the snapshot and the merge match.
+    // No awaits between reading the app data and merging, so the two match.
     const snap = readNow()
     const snapKey = stableStringify(snap)
     const localDoc = stamp(state.local ?? state.base, snap, clock, schema)
@@ -97,13 +117,26 @@ export async function syncOnce(deps: SyncDeps): Promise<SyncResult> {
     } else {
       merged = collectGarbage(localDoc, now())
     }
+    merged = canonDoc(merged)
 
     let version = remote?.version ?? 0
     let pushed = false
-    if (!remoteDoc || !docsEqual(merged, remoteDoc)) {
-      const res = await transport.put(encryptJson(keys, merged), remote ? remote.version : null)
-      if (!res.ok) continue // someone else wrote first: pull again and merge
+    let manifest: Manifest | null = remoteManifest
+    const layout = buildLayout(keys, merged, remoteManifest)
+    if (!remote || remote.format === 1 || !sameManifest(layout.manifest, remoteManifest)) {
+      const total = layout.manifest.b.reduce((s, b) => s + b.p.reduce((t, p) => t + p[1], 0), 0)
+      if (total > MAX_VAULT_BYTES) throw new SyncHttpError(413, 'Your data is too big to sync')
+      const uploads = layout.uploads.filter((u) => !sent.has(u.name))
+      await transport.writeChunks(uploads)
+      for (const u of uploads) sent.add(u.name)
+      const res = await transport.commit(encryptJson(keys, layout.manifest, AAD.manifest(keys.vaultId)), layout.refs, remote ? remote.version : null)
+      if (!res.ok) {
+        // Someone else wrote first, or the server lost an upload: pull again and merge.
+        for (const name of res.missing ?? []) sent.delete(name)
+        continue
+      }
       version = res.version
+      manifest = layout.manifest
       pushed = true
     }
 
@@ -121,10 +154,10 @@ export async function syncOnce(deps: SyncDeps): Promise<SyncResult> {
     const pulled = joining || stableStringify(result) !== before
     if (pulled) deps.write(result)
 
-    const next: SyncState = { ...state, base: merged, local: final, version, clock: clock.last(), lastSync: now() }
+    const next: SyncState = { ...state, base: merged, local: final, version, manifest, clock: clock.last(), lastSync: now() }
     Object.assign(state, next)
     await deps.saveState(next)
-    return { pushed, pulled, conflicts, version, dirty }
+    return { pushed, pulled, conflicts, version, dirty, fetched, uploaded: sent.size }
   }
   throw new Error('Sync kept clashing with another device. Try again.')
 }

@@ -1,6 +1,7 @@
 export * from './hlc'
 export * from './text'
 export * from './doc'
+export * from './chunks'
 export * from './crypto'
 export * from './transport'
 export * from './engine'

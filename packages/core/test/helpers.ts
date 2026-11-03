@@ -1,7 +1,8 @@
-import { deriveKeys, generateSyncKey, newDeviceId } from '../src/crypto'
+import { deriveKeys, generateSyncKey, newDeviceId, type VaultKeys } from '../src/crypto'
 import type { Schema, Snapshot } from '../src/doc'
 import { recordLocalEdits, syncOnce, type SyncState } from '../src/engine'
-import type { PutResult, Transport } from '../src/transport'
+import { httpTransport, type Transport } from '../src/transport'
+import { TestServer } from './server'
 
 export const schema: Schema = {
   collections: ['settings', 'logs', 'labs'],
@@ -10,32 +11,16 @@ export const schema: Schema = {
   localFields: { settings: ['theme'] }
 }
 
-/** In-memory stand-in for the Worker: one blob and a version number. */
-export class MemoryServer {
-  body: Uint8Array | null = null
-  version = 0
-  puts = 0
-  /** Runs once before the next PUT is checked (to fake another device writing). */
-  beforePut: (() => Promise<void>) | null = null
-
-  transport(): Transport {
-    return {
-      get: async () => (this.body ? { version: this.version, body: this.body } : null),
-      put: async (body, ifMatch): Promise<PutResult> => {
-        const hook = this.beforePut
-        this.beforePut = null
-        if (hook) await hook()
-        const current = this.body ? this.version : null
-        if (current !== ifMatch) return { ok: false, version: current }
-        this.body = body
-        this.version += 1
-        this.puts++
-        return { ok: true, version: this.version }
-      },
-      remove: async () => {
-        this.body = null
-      }
-    }
+/** One vault on the real Worker code (see server.ts). */
+export class MemoryServer extends TestServer {
+  get puts(): number {
+    return this.commits
+  }
+  set beforePut(fn: (() => Promise<void>) | null) {
+    this.beforeCommit = fn
+  }
+  transport(keys: VaultKeys): Transport {
+    return httpTransport({ baseUrl: 'https://sync.test', keys, http: this.http })
   }
 }
 
@@ -55,7 +40,7 @@ export class Device {
     return syncOnce({
       schema,
       keys: this.keys,
-      transport: this.server.transport(),
+      transport: this.server.transport(this.keys),
       state: this.state,
       saveState: (s) => {
         this.state = JSON.parse(JSON.stringify(s)) as SyncState

@@ -1,5 +1,6 @@
 import { gcm } from '@noble/ciphers/aes.js'
 import { hkdf } from '@noble/hashes/hkdf.js'
+import { hmac } from '@noble/hashes/hmac.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, concatBytes, randomBytes, utf8ToBytes } from '@noble/hashes/utils.js'
 import { gunzipSync, gzipSync, strFromU8, strToU8 } from 'fflate'
@@ -24,6 +25,8 @@ export interface VaultKeys {
   vaultId: string
   authToken: string
   encKey: Uint8Array
+  /** Names chunks (HMAC), so the server cannot tell what is inside from the name. */
+  idKey: Uint8Array
 }
 
 export function generateSyncKey(): Uint8Array {
@@ -101,26 +104,51 @@ export function deriveKeys(key: Uint8Array): VaultKeys {
   return {
     vaultId: bytesToHex(part('kryfsec vault id v1', 16)),
     authToken: toBase64Url(part('kryfsec auth v1', 32)),
-    encKey: part('kryfsec enc v1', 32)
+    encKey: part('kryfsec enc v1', 32),
+    idKey: part('kryfsec chunk id v1', 32)
   }
 }
 
-const aad = (vaultId: string): Uint8Array => utf8ToBytes(`kryfsec-sync v1 ${vaultId}`)
+/** Extra data bound to each encrypted piece, so a piece cannot be moved to another vault or slot. */
+export const AAD = {
+  /** The old single-blob format (format 1). */
+  blob: (vaultId: string): string => `kryfsec-sync v1 ${vaultId}`,
+  manifest: (vaultId: string): string => `kryfsec-sync v2 manifest ${vaultId}`,
+  chunk: (vaultId: string, name: string): string => `kryfsec-sync v2 chunk ${vaultId} ${name}`
+}
 
-/** JSON -> gzip -> AES-256-GCM. Output: [version][12-byte nonce][ciphertext + tag]. */
-export function encryptJson(keys: VaultKeys, value: unknown): Uint8Array {
+/** AES-256-GCM. Output: [version][12-byte nonce][ciphertext + tag]. */
+export function encryptBytes(keys: VaultKeys, plain: Uint8Array, aad: string): Uint8Array {
   const nonce = randomBytes(NONCE_BYTES)
-  const plain = gzipSync(strToU8(JSON.stringify(value)), { level: 6, mtime: 0 })
-  const sealed = gcm(keys.encKey, nonce, aad(keys.vaultId)).encrypt(plain)
+  const sealed = gcm(keys.encKey, nonce, utf8ToBytes(aad)).encrypt(plain)
   return concatBytes(new Uint8Array([ENVELOPE_VERSION]), nonce, sealed)
 }
 
-/** Throws if the data was changed, or was made with another key. */
-export function decryptJson(keys: VaultKeys, data: Uint8Array): unknown {
+/** Throws if the data was changed, or was made with another key or for another slot. */
+export function decryptBytes(keys: VaultKeys, data: Uint8Array, aad: string): Uint8Array {
   if (data.length < 1 + NONCE_BYTES + 16 || data[0] !== ENVELOPE_VERSION) throw new Error('Unknown sync data format')
   const nonce = data.slice(1, 1 + NONCE_BYTES)
-  const plain = gcm(keys.encKey, nonce, aad(keys.vaultId)).decrypt(data.slice(1 + NONCE_BYTES))
-  return JSON.parse(strFromU8(gunzipSync(plain)))
+  return gcm(keys.encKey, nonce, utf8ToBytes(aad)).decrypt(data.slice(1 + NONCE_BYTES))
+}
+
+export const gzip = (b: Uint8Array): Uint8Array => gzipSync(b, { level: 6, mtime: 0 })
+export const gunzip = (b: Uint8Array): Uint8Array => gunzipSync(b)
+export { strFromU8, strToU8 }
+
+/** JSON -> gzip -> AES-256-GCM. */
+export function encryptJson(keys: VaultKeys, value: unknown, aad = AAD.blob(keys.vaultId)): Uint8Array {
+  return encryptBytes(keys, gzip(strToU8(JSON.stringify(value))), aad)
+}
+
+/** Throws if the data was changed, or was made with another key. */
+export function decryptJson(keys: VaultKeys, data: Uint8Array, aad = AAD.blob(keys.vaultId)): unknown {
+  return JSON.parse(strFromU8(gunzip(decryptBytes(keys, data, aad))))
+}
+
+/** Keyed name for a piece of data: HMAC-SHA256 with the chunk id key, 16 bytes as hex. */
+export function chunkName(keys: VaultKeys, data: Uint8Array | string): string {
+  const bytes = typeof data === 'string' ? strToU8(data) : data
+  return bytesToHex(hmac(sha256, keys.idKey, bytes).slice(0, 16))
 }
 
 /** Random device id, used to break ties between two changes at the same moment. */

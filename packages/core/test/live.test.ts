@@ -53,4 +53,67 @@ describe.skipIf(!url)('live server', () => {
     }
     expect(await transport.get()).toBeNull()
   })
+
+  it('a vault over 4 MB syncs in pieces, and a small edit uploads one piece', { timeout: 300_000 }, async () => {
+    const keys = deriveKeys(generateSyncKey())
+    const transport = httpTransport({ baseUrl: url, keys, http: fetchHttp() })
+    let x = 7
+    const noise = (len: number): string => {
+      let s = ''
+      while (s.length < len) {
+        x ^= x << 13
+        x ^= x >>> 17
+        x ^= x << 5
+        s += (x >>> 0).toString(36)
+      }
+      return s.slice(0, len)
+    }
+    const count = Number(process.env.LIVE_LOGS ?? 5000)
+    const logs = Array.from({ length: count }, (_, i) => ({ id: `log-${i}`, title: `note ${i}`, body: noise(1500) }))
+    const make = (l: Snapshot[string]) => {
+      const dev = {
+        data: { settings: [{ id: 'settings', theme: 'dark' }], logs: l, labs: [] } as Snapshot,
+        state: { device: newDeviceId(), vaultId: keys.vaultId, base: null, version: null } as SyncState
+      }
+      const sync = () =>
+        syncOnce({
+          schema,
+          keys,
+          transport,
+          state: dev.state,
+          saveState: () => {},
+          read: () => JSON.parse(JSON.stringify(dev.data)) as Snapshot,
+          write: (s) => (dev.data = s)
+        })
+      return { dev, sync }
+    }
+    try {
+      const a = make(logs)
+      const t0 = Date.now()
+      const first = await a.sync()
+      const stored = a.dev.state.manifest!.b.reduce((s, b) => s + b.p.reduce((t, p) => t + p[1], 0), 0)
+      console.log(`first upload: ${first.uploaded} pieces, ${(stored / 1048576).toFixed(1)} MB stored, ${Date.now() - t0} ms`)
+      expect(stored).toBeGreaterThan(4 * 1024 * 1024)
+
+      const b = make([])
+      const t1 = Date.now()
+      const join = await b.sync()
+      console.log(`second device: ${join.fetched} pieces downloaded, ${Date.now() - t1} ms`)
+      expect(b.dev.data.logs.length).toBe(count)
+      await a.sync()
+
+      b.dev.data.logs = b.dev.data.logs.map((l) => (l.id === 'log-1234' ? { ...l, title: 'small edit' } : l))
+      const t2 = Date.now()
+      const edit = await b.sync()
+      console.log(`small edit: ${edit.uploaded} piece uploaded, ${Date.now() - t2} ms`)
+      expect(edit.uploaded).toBe(1)
+      const pull = await a.sync()
+      console.log(`other device: ${pull.fetched} piece downloaded`)
+      expect(pull.fetched).toBe(1)
+      expect(a.dev.data.logs.find((l) => l.id === 'log-1234')?.title).toBe('small edit')
+    } finally {
+      await deleteVault(transport)
+    }
+    expect(await transport.get()).toBeNull()
+  })
 })

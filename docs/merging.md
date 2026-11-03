@@ -77,8 +77,9 @@ It takes the best parts of the above and adds a few things.
 
 ## Limits
 
-- One shared encrypted file, not per-change messages. Fine for a personal journal
-  (the server caps it at 4 MB encrypted, after gzip), not for huge data.
+- One shared document, stored as encrypted pieces (see [chunking.md](chunking.md)),
+  not per-change messages. Fine for a personal journal (up to 64 MB encrypted,
+  after gzip), not for huge data.
 - The order of items in a list is not synced. New items go to the top.
 - A text merge works on whole lines. Two edits on the same line always make a
   conflict copy.
@@ -90,6 +91,7 @@ It takes the best parts of the above and adds a few things.
 - `packages/core/src/hlc.ts`: the clock
 - `packages/core/src/doc.ts`: stamping, merge, tombstones, cleanup
 - `packages/core/src/text.ts`: line-based three-way merge
+- `packages/core/src/chunks.ts`: splitting the doc into encrypted pieces
 - `packages/core/src/engine.ts`: one sync round (pull, merge, push with `If-Match`, retry)
 - `packages/core/src/controller.ts`: when to sync (after edits, on open, retry when offline)
 - `packages/core/src/kryfsec.ts`: the kryfsec data schema (which fields are text, which stay local)
