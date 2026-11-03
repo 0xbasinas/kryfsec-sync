@@ -131,6 +131,70 @@ describe('SyncController with kryfsec data', () => {
     expect(a.storage.key).toBeNull()
   })
 
+  it('syncs adds, edits and deletes in every collection, both ways', async () => {
+    const server = fakeServer()
+    const desk = app(server, 'a')
+    const phone = app(server, 'b')
+    const empty = (d: KryfsecData): KryfsecData => ({ ...d, areas: [], topics: [], logs: [] })
+    desk.edit(empty)
+    phone.edit(empty)
+    await phone.ctl.join(await desk.ctl.create())
+
+    // Made on the phone.
+    phone.edit((d) => ({
+      ...d,
+      areas: [{ id: 'ar', name: 'Forensics', icon: 'shield', color: 'var(--c-sage)', description: 'Disks' }],
+      topics: [
+        { id: 'tp', areaId: 'ar', title: 'Volatility', status: 'todo', notes: '' },
+        { id: 'tp2', areaId: 'ar', title: 'Autopsy', status: 'todo', notes: '' }
+      ],
+      labs: [{ id: 'lb', name: 'Lame', platform: 'Hack The Box', difficulty: 'easy', status: 'todo', url: '', writeup: '', tags: [], minutes: 0 }],
+      resources: [{ id: 'rs', title: 'CyberChef', kind: 'tool', url: 'https://gchq.github.io/CyberChef/', status: 'todo', notes: '', free: true }],
+      certs: [{ id: 'ct', name: 'eJPT', provider: 'INE', progress: 0, status: 'planned', notes: '', url: '' }],
+      goals: [{ id: 'gl', title: 'Root 3 boxes', done: false }]
+    }))
+    await phone.ctl.syncNow()
+    await desk.ctl.syncNow()
+    for (const k of ['areas', 'topics', 'labs', 'resources', 'certs', 'goals'] as const) expect(desk.data[k].length, k).toBeGreaterThan(0)
+
+    // Edited on the desktop, while the phone changes other fields of the same items.
+    desk.edit((d) => ({
+      ...d,
+      areas: d.areas.map((x) => ({ ...x, name: 'DFIR' })),
+      topics: d.topics.map((x) => (x.id === 'tp' ? { ...x, notes: 'pslist, netscan' } : x)),
+      labs: d.labs.map((x) => ({ ...x, name: 'Lame (retired)' })),
+      resources: d.resources.map((x) => ({ ...x, status: 'done' })),
+      certs: d.certs.map((x) => ({ ...x, progress: 40 })),
+      goals: []
+    }))
+    phone.edit((d) => ({
+      ...d,
+      topics: d.topics.map((x) => (x.id === 'tp' ? { ...x, status: 'learning' } : x)),
+      labs: d.labs.map((x) => ({ ...x, status: 'done' })),
+      certs: d.certs.map((x) => ({ ...x, status: 'studying' }))
+    }))
+    await desk.ctl.syncNow()
+    await phone.ctl.syncNow()
+    await desk.ctl.syncNow()
+    for (const d of [desk.data, phone.data]) {
+      expect(d.areas[0]).toMatchObject({ name: 'DFIR' })
+      expect(d.topics.find((x) => x.id === 'tp')).toMatchObject({ notes: 'pslist, netscan', status: 'learning' })
+      expect(d.labs[0]).toMatchObject({ name: 'Lame (retired)', status: 'done' })
+      expect(d.resources[0]).toMatchObject({ status: 'done' })
+      expect(d.certs[0]).toMatchObject({ progress: 40, status: 'studying' })
+      expect(d.goals).toEqual([])
+    }
+
+    // Deleting an area (and its topics) on the phone sticks on the desktop.
+    phone.edit((d) => ({ ...d, areas: [], topics: [] }))
+    await phone.ctl.syncNow()
+    await desk.ctl.syncNow()
+    expect(desk.data.areas).toEqual([])
+    expect(desk.data.topics).toEqual([])
+    desk.ctl.dispose()
+    phone.ctl.dispose()
+  })
+
   it('keeps the local order and puts new items first', () => {
     const cur = sample('a')
     cur.logs = [
