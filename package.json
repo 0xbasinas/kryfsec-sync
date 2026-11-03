@@ -1,0 +1,38 @@
+{
+  "name": "kryfsec-sync",
+  "version": "0.1.0",
+  "private": true,
+  "description": "End-to-end encrypted sync for kryfsec: a small Cloudflare Worker and the shared sync code the apps use",
+  "license": "MIT",
+  "author": {
+    "name": "0xbasinas",
+    "email": "241305723+0xbasinas@users.noreply.github.com"
+  },
+  "homepage": "https://kryfsec.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0xbasinas/kryfsec-sync.git"
+  },
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p worker/tsconfig.json",
+    "build:worker": "cd worker && wrangler deploy --dry-run --outdir dist",
+    "dev:worker": "cd worker && wrangler dev",
+    "deploy": "cd worker && wrangler deploy",
+    "smoke": "node scripts/smoke.mjs",
+    "vendor": "bash scripts/vendor.sh"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "fflate": "^0.8.3",
+    "node-diff3": "^3.2.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261103.1",
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0",
+    "wrangler": "^4.156.2"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  // kryfsec sync server. Self-host: change "name" and "routes", then `npx wrangler deploy`.
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "kryfsec-sync",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "routes": [{ "pattern": "sync.kryfsec.com", "custom_domain": true }],
+  "durable_objects": {
+    "bindings": [{ "name": "VAULTS", "class_name": "Vault" }]
+  },
+  // SQLite-backed Durable Objects work on the Workers free plan.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Vault"] }],
+  "observability": { "enabled": false }
+}
