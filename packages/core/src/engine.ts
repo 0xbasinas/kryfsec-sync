@@ -81,7 +81,8 @@ export async function syncOnce(deps: SyncDeps): Promise<SyncResult> {
       if (newest) clock.observe(newest)
     }
     const joining = state.base === null && remoteDoc !== null
-    const readNow = (): Snapshot => (joining && deps.onJoin ? deps.onJoin(deps.read()) : deps.read())
+    const remoteSnap = joining && remoteDoc ? toSnapshot(remoteDoc, schema) : null
+    const readNow = (): Snapshot => (remoteSnap ? joinView(deps.onJoin ? deps.onJoin(deps.read()) : deps.read(), remoteSnap) : deps.read())
 
     // No awaits from here until the PUT, so the snapshot and the merge match.
     const snap = readNow()
@@ -126,6 +127,19 @@ export async function syncOnce(deps: SyncDeps): Promise<SyncResult> {
     return { pushed, pulled, conflicts, version, dirty }
   }
   throw new Error('Sync kept clashing with another device. Try again.')
+}
+
+/**
+ * First sync on a joining device: for items both sides have (like the single
+ * settings item), the vault's values win. This device's own items are added.
+ */
+function joinView(local: Snapshot, remote: Snapshot): Snapshot {
+  const out: Snapshot = {}
+  for (const [coll, list] of Object.entries(local)) {
+    const theirs = new Map((remote[coll] ?? []).map((x) => [x.id, x]))
+    out[coll] = list.map((it) => (theirs.has(it.id) ? { ...it, ...theirs.get(it.id)! } : it))
+  }
+  return out
 }
 
 /** Delete this vault on the server (all devices lose the server copy). */

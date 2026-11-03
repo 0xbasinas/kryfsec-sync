@@ -67,7 +67,12 @@ It takes the best parts of the above and adds a few things.
    the clash itself, so two devices that hit the same clash make the same copy
    instead of two.
 
-8. **Some fields stay on each device.** The theme (dark or light) is not synced,
+8. **Joining is gentle.** The first time a device joins a vault that has data,
+   its own starter roadmap and examples are left out (so they are not added
+   twice), shared settings come from the vault, and anything you made yourself
+   on that device is added.
+
+9. **Some fields stay on each device.** The theme (dark or light) is not synced,
    so the phone and the laptop can each look the way you like.
 
 ## Limits
@@ -86,4 +91,6 @@ It takes the best parts of the above and adds a few things.
 - `packages/core/src/doc.ts`: stamping, merge, tombstones, cleanup
 - `packages/core/src/text.ts`: line-based three-way merge
 - `packages/core/src/engine.ts`: one sync round (pull, merge, push with `If-Match`, retry)
+- `packages/core/src/controller.ts`: when to sync (after edits, on open, retry when offline)
+- `packages/core/src/kryfsec.ts`: the kryfsec data schema (which fields are text, which stay local)
 - `packages/core/test/merge.test.ts`: the cases above, as tests

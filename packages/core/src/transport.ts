@@ -33,12 +33,25 @@ export class SyncHttpError extends Error {
   }
 }
 
+/** The server could not be reached (offline, DNS, timeout). */
+export class SyncNetworkError extends Error {
+  constructor(message = 'Could not reach the sync server') {
+    super(message)
+    this.name = 'SyncNetworkError'
+  }
+}
+
 export const DEFAULT_SYNC_URL = 'https://sync.kryfsec.com'
 
 /** Use the platform fetch as an HttpFn. */
 export function fetchHttp(f: typeof fetch = fetch): HttpFn {
   return async (req) => {
-    const res = await f(req.url, { method: req.method, headers: req.headers, body: req.body as BodyInit | undefined })
+    let res: Response
+    try {
+      res = await f(req.url, { method: req.method, headers: req.headers, body: req.body as BodyInit | undefined })
+    } catch (err) {
+      throw new SyncNetworkError(err instanceof Error ? err.message : String(err))
+    }
     const headers: Record<string, string> = {}
     res.headers.forEach((v, k) => (headers[k.toLowerCase()] = v))
     return { status: res.status, headers, body: new Uint8Array(await res.arrayBuffer()) }
